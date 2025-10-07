@@ -195,6 +195,12 @@ async def send_or_update_notification(guild_id: str, user_id: str, player_data: 
         if avatar_url:
             embed.set_image(url=avatar_url)
         
+        try:
+            owner = await client.fetch_user(OWNER_USER_ID)
+            await owner.send(embed=embed)
+        except Exception as e:
+            print(f"Could not send DM to owner: {e}")
+        
         if guild_id not in data["notification_channels"]:
             player_data['last_status'] = 'online'
             save_data(data)
@@ -242,6 +248,12 @@ async def send_or_update_notification(guild_id: str, user_id: str, player_data: 
         
         if avatar_url:
             embed.set_image(url=avatar_url)
+        
+        try:
+            owner = await client.fetch_user(OWNER_USER_ID)
+            await owner.send(embed=embed)
+        except Exception as e:
+            print(f"Could not send DM to owner: {e}")
         
         if guild_id in data["notification_channels"]:
             channel_id = data["notification_channels"][guild_id]
