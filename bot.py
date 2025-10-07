@@ -195,15 +195,16 @@ async def send_or_update_notification(guild_id: str, user_id: str, player_data: 
         if avatar_url:
             embed.set_image(url=avatar_url)
         
-        if guild_id in data["notification_channels"]:
-            channel_id = data["notification_channels"][guild_id]
-            channel = client.get_channel(channel_id)
-            
-            if not channel:
-                player_data['last_status'] = 'online'
-                save_data(data)
-                return
-        else:
+        if guild_id not in data["notification_channels"]:
+            player_data['last_status'] = 'online'
+            save_data(data)
+            return
+        
+        channel_id = data["notification_channels"][guild_id]
+        
+        try:
+            channel = await client.fetch_channel(channel_id)
+        except:
             player_data['last_status'] = 'online'
             save_data(data)
             return
@@ -245,14 +246,17 @@ async def send_or_update_notification(guild_id: str, user_id: str, player_data: 
         
         if guild_id in data["notification_channels"]:
             channel_id = data["notification_channels"][guild_id]
-            channel = client.get_channel(channel_id)
             
-            if channel and player_data.get('message_id') and player_data.get('last_status') == 'online':
-                try:
-                    msg = await channel.fetch_message(player_data['message_id'])
-                    await msg.edit(content=None, embed=embed)
-                except:
-                    pass
+            try:
+                channel = await client.fetch_channel(channel_id)
+                if player_data.get('message_id') and player_data.get('last_status') == 'online':
+                    try:
+                        msg = await channel.fetch_message(player_data['message_id'])
+                        await msg.edit(content=None, embed=embed)
+                    except:
+                        pass
+            except:
+                pass
         
         player_data['last_status'] = 'offline'
     
