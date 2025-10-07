@@ -1,0 +1,28 @@
+{
+  "tracked_players": {
+    "1330685351131480164": {
+      "4096891084": {
+        "user_id": 4096891084,
+        "username": "jailbreakaccs",
+        "display_name": "ProcatFromSG",
+        "added_at": "2025-10-07T15:07:02.644473",
+        "last_status": "online",
+        "message_id": 1425139678994104322
+      },
+      "5032279333": {
+        "user_id": 5032279333,
+        "username": "Orizz_X",
+        "display_name": "Chak",
+        "added_at": "2025-10-07T15:24:56.656321",
+        "last_status": "offline",
+        "message_id": 1425142030761201757
+      }
+    }
+  },
+  "notification_channels": {
+    "1330685351131480164": 1330685351412498480
+  },
+  "ping_roles": {
+    "1330685351131480164": 1330685351152586879
+  }
+}
