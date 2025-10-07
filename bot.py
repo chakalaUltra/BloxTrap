@@ -267,6 +267,7 @@ async def send_or_update_notification(guild_id: str, user_id: str, player_data: 
         
         if guild_id not in data["notification_channels"]:
             player_data['last_status'] = 'offline'
+            player_data['message_id'] = None  # Clear message_id for fresh message on next online
             save_data(data)
             return
         
@@ -279,6 +280,7 @@ async def send_or_update_notification(guild_id: str, user_id: str, player_data: 
         except Exception as e:
             print(f"     ✗ Failed to fetch channel: {e}")
             player_data['last_status'] = 'offline'
+            player_data['message_id'] = None  # Clear message_id for fresh message on next online
             save_data(data)
             return
         
@@ -291,25 +293,24 @@ async def send_or_update_notification(guild_id: str, user_id: str, player_data: 
             except discord.NotFound:
                 print(f"     → Message not found in channel, sending new offline notification")
                 msg = await channel.send(embed=embed)
-                player_data['message_id'] = msg.id
                 print(f"     ✓ Sent new offline message ID: {msg.id}")
             except discord.Forbidden:
                 print(f"     → Cannot access message (might be in DMs), sending new offline notification")
                 msg = await channel.send(embed=embed)
-                player_data['message_id'] = msg.id
                 print(f"     ✓ Sent new offline message ID: {msg.id}")
             except Exception as e:
                 print(f"     → Error editing message ({type(e).__name__}: {e}), sending new offline notification")
                 msg = await channel.send(embed=embed)
-                player_data['message_id'] = msg.id
                 print(f"     ✓ Sent new offline message ID: {msg.id}")
         else:
             print(f"     → No existing message, sending new offline notification")
             msg = await channel.send(embed=embed)
-            player_data['message_id'] = msg.id
             print(f"     ✓ Sent offline message ID: {msg.id}")
         
+        # Clear the message_id so next time player goes online, a fresh message is sent
+        player_data['message_id'] = None
         player_data['last_status'] = 'offline'
+        print(f"     → Cleared message_id for fresh notification on next online status")
     
     save_data(data)
 
