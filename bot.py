@@ -218,33 +218,11 @@ async def send_or_update_notification(guild_id: str, user_id: str, player_data: 
             role_mention = f"<@&{role_id}>"
             print(f"     → Will ping role ID: {role_id}")
         
-        # Try to fetch and edit existing message, but only if it's in the correct channel
-        if player_data.get('message_id'):
-            print(f"     → Attempting to edit existing message ID: {player_data['message_id']}")
-            try:
-                msg = await channel.fetch_message(player_data['message_id'])
-                await msg.edit(content=role_mention if role_mention else None, embed=embed)
-                print(f"     ✓ Successfully edited message")
-            except discord.NotFound:
-                print(f"     → Message not found in channel, sending new message")
-                msg = await channel.send(content=role_mention if role_mention else None, embed=embed)
-                player_data['message_id'] = msg.id
-                print(f"     ✓ Sent new message ID: {msg.id}")
-            except discord.Forbidden:
-                print(f"     → Cannot access message (might be in DMs), sending new message")
-                msg = await channel.send(content=role_mention if role_mention else None, embed=embed)
-                player_data['message_id'] = msg.id
-                print(f"     ✓ Sent new message ID: {msg.id}")
-            except Exception as e:
-                print(f"     → Error editing message ({type(e).__name__}: {e}), sending new one")
-                msg = await channel.send(content=role_mention if role_mention else None, embed=embed)
-                player_data['message_id'] = msg.id
-                print(f"     ✓ Sent new message ID: {msg.id}")
-        else:
-            print(f"     → No existing message, sending new one")
-            msg = await channel.send(content=role_mention if role_mention else None, embed=embed)
-            player_data['message_id'] = msg.id
-            print(f"     ✓ Sent new message ID: {msg.id}")
+        # Always send a new message when player comes online (message_id was cleared when they went offline)
+        print(f"     → Player is online, sending new notification with role ping")
+        msg = await channel.send(content=role_mention if role_mention else None, embed=embed)
+        player_data['message_id'] = msg.id
+        print(f"     ✓ Sent new online message ID: {msg.id}")
         
         player_data['last_status'] = 'online'
     else:
