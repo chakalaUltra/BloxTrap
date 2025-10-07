@@ -91,8 +91,9 @@ class RobloxAPI:
         print(f"[DEBUG] Presence type: {presence_type}")
 
         # userPresenceType: 0 = Offline, 1 = Online (website), 2 = Online (in-game), 3 = In Studio
-        if presence_type in [1, 2, 3]:
-            game_location = presence.get('lastLocation', 'Online')
+        # Only consider type 2 (in-game) as truly "online" to avoid false positives from website browsing
+        if presence_type == 2:
+            game_location = presence.get('lastLocation', 'Playing')
             return {
                 'online': True,
                 'status': 'Online',
