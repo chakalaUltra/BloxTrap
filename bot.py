@@ -201,10 +201,13 @@ async def send_or_update_notification(guild_id: str, user_id: str, player_data: 
             return
         
         channel_id = data["notification_channels"][guild_id]
+        print(f"     → Attempting to fetch channel ID: {channel_id}")
         
         try:
             channel = await client.fetch_channel(channel_id)
-        except:
+            print(f"     → Successfully fetched channel: {channel.name}")
+        except Exception as e:
+            print(f"     ✗ Failed to fetch channel: {e}")
             player_data['last_status'] = 'online'
             save_data(data)
             return
@@ -213,17 +216,24 @@ async def send_or_update_notification(guild_id: str, user_id: str, player_data: 
         if guild_id in data["ping_roles"]:
             role_id = data["ping_roles"][guild_id]
             role_mention = f"<@&{role_id}>"
+            print(f"     → Will ping role ID: {role_id}")
         
         if player_data.get('message_id'):
+            print(f"     → Editing existing message ID: {player_data['message_id']}")
             try:
                 msg = await channel.fetch_message(player_data['message_id'])
                 await msg.edit(content=role_mention if role_mention else None, embed=embed)
-            except:
+                print(f"     ✓ Successfully edited message")
+            except Exception as e:
+                print(f"     → Could not edit message ({e}), sending new one")
                 msg = await channel.send(content=role_mention if role_mention else None, embed=embed)
                 player_data['message_id'] = msg.id
+                print(f"     ✓ Sent new message ID: {msg.id}")
         else:
+            print(f"     → Sending new message")
             msg = await channel.send(content=role_mention if role_mention else None, embed=embed)
             player_data['message_id'] = msg.id
+            print(f"     ✓ Sent message ID: {msg.id}")
         
         player_data['last_status'] = 'online'
     else:
