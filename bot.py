@@ -314,9 +314,6 @@ async def check_players():
                 if current_status != player_data.get('last_status'):
                     print(f"     ✓ Status changed! Sending notification...")
                     await send_or_update_notification(guild_id, user_id, player_data, status_info)
-                elif current_status == 'online':
-                    print(f"     ✓ Player is online, updating notification...")
-                    await send_or_update_notification(guild_id, user_id, player_data, status_info)
                 else:
                     print(f"     - No change, skipping notification")
                 
