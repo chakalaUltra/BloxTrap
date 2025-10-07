@@ -254,19 +254,39 @@ async def send_or_update_notification(guild_id: str, user_id: str, player_data: 
         if avatar_url:
             embed.set_image(url=avatar_url)
         
-        if guild_id in data["notification_channels"]:
-            channel_id = data["notification_channels"][guild_id]
-            
+        if guild_id not in data["notification_channels"]:
+            player_data['last_status'] = 'offline'
+            save_data(data)
+            return
+        
+        channel_id = data["notification_channels"][guild_id]
+        print(f"     → Attempting to fetch channel ID: {channel_id}")
+        
+        try:
+            channel = await client.fetch_channel(channel_id)
+            print(f"     → Successfully fetched channel: {channel.name}")
+        except Exception as e:
+            print(f"     ✗ Failed to fetch channel: {e}")
+            player_data['last_status'] = 'offline'
+            save_data(data)
+            return
+        
+        if player_data.get('message_id'):
+            print(f"     → Editing existing message ID: {player_data['message_id']} to offline")
             try:
-                channel = await client.fetch_channel(channel_id)
-                if player_data.get('message_id') and player_data.get('last_status') == 'online':
-                    try:
-                        msg = await channel.fetch_message(player_data['message_id'])
-                        await msg.edit(content=None, embed=embed)
-                    except:
-                        pass
-            except:
-                pass
+                msg = await channel.fetch_message(player_data['message_id'])
+                await msg.edit(content=None, embed=embed)
+                print(f"     ✓ Successfully edited message to offline")
+            except Exception as e:
+                print(f"     → Could not edit message ({e}), sending new offline notification")
+                msg = await channel.send(embed=embed)
+                player_data['message_id'] = msg.id
+                print(f"     ✓ Sent new offline message ID: {msg.id}")
+        else:
+            print(f"     → Sending new offline notification")
+            msg = await channel.send(embed=embed)
+            player_data['message_id'] = msg.id
+            print(f"     ✓ Sent offline message ID: {msg.id}")
         
         player_data['last_status'] = 'offline'
     
