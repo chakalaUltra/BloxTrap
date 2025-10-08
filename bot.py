@@ -201,13 +201,10 @@ async def send_or_update_notification(guild_id: str, user_id: str, player_data: 
             return
         
         channel_id = data["notification_channels"][guild_id]
-        print(f"     → Attempting to fetch channel ID: {channel_id}")
         
         try:
             channel = await client.fetch_channel(channel_id)
-            print(f"     → Successfully fetched channel: {channel.name}")
         except Exception as e:
-            print(f"     ✗ Failed to fetch channel: {e}")
             player_data['last_status'] = 'online'
             save_data(data)
             return
@@ -216,14 +213,9 @@ async def send_or_update_notification(guild_id: str, user_id: str, player_data: 
         if guild_id in data["ping_roles"]:
             role_id = data["ping_roles"][guild_id]
             role_mention = f"<@&{role_id}>"
-            print(f"     → Will ping role ID: {role_id}")
         
-        # Always send a new message when player comes online (message_id was cleared when they went offline)
-        print(f"     → Player is online, sending new notification with role ping")
         msg = await channel.send(content=role_mention if role_mention else None, embed=embed)
         player_data['message_id'] = msg.id
-        print(f"     ✓ Sent new online message ID: {msg.id}")
-        
         player_data['last_status'] = 'online'
     else:
         status_text = "Status: Offline"
@@ -294,37 +286,20 @@ async def send_or_update_notification(guild_id: str, user_id: str, player_data: 
 
 @tasks.loop(seconds=30)
 async def check_players():
-    print(f"\n{'='*60}")
-    print(f"[{datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')}] Starting player check cycle")
-    print(f"{'='*60}")
-    
     for guild_id, tracked in data["tracked_players"].items():
-        print(f"\nChecking guild {guild_id} - {len(tracked)} player(s) tracked")
-        
         for user_id, player_data in tracked.items():
             try:
                 status_info = await roblox_api.get_player_status(int(user_id))
-                
                 current_status = 'online' if status_info.get('online', False) else 'offline'
                 
-                print(f"\n  → Checking player: {player_data.get('display_name', 'Unknown')} ({user_id})")
-                print(f"     Current status: {current_status}, Last status: {player_data.get('last_status')}")
-                print(f"     Online: {status_info.get('online', False)}")
-                
                 if current_status != player_data.get('last_status'):
-                    print(f"     ✓ Status changed! Sending notification...")
+                    print(f"✓ {player_data.get('display_name', 'Unknown')} is now {current_status}")
                     await send_or_update_notification(guild_id, user_id, player_data, status_info)
-                else:
-                    print(f"     - No change, skipping notification")
                 
             except Exception as e:
-                print(f"     ✗ Error checking player {user_id}: {e}")
+                print(f"✗ Error checking player {user_id}: {e}")
             
             await asyncio.sleep(0.5)
-    
-    print(f"\n{'='*60}")
-    print(f"Check cycle completed. Next check in 30 seconds...")
-    print(f"{'='*60}\n")
 
 @client.event
 async def on_ready():
