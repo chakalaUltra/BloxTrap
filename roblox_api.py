@@ -77,10 +77,7 @@ class RobloxAPI:
         presence = await self.get_user_presence(user_id)
         user_info = await self.get_user_info(user_id)
 
-        print(f"[DEBUG] Raw presence for {user_id}: {presence}")
-
         if not presence or not user_info:
-            print(f"[DEBUG] Missing presence or user_info - presence: {presence is not None}, user_info: {user_info is not None}")
             return {
                 'online': False,
                 'status': 'Offline',
@@ -88,7 +85,6 @@ class RobloxAPI:
             }
 
         presence_type = presence['userPresenceType']
-        print(f"[DEBUG] Presence type: {presence_type}")
 
         # userPresenceType: 0 = Offline, 1 = Online (website), 2 = Online (in-game), 3 = In Studio
         # Only consider type 2 (in-game) as truly "online" to avoid false positives from website browsing

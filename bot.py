@@ -242,45 +242,26 @@ async def send_or_update_notification(guild_id: str, user_id: str, player_data: 
             return
         
         channel_id = data["notification_channels"][guild_id]
-        print(f"     → Attempting to fetch channel ID: {channel_id}")
         
         try:
             channel = await client.fetch_channel(channel_id)
-            print(f"     → Successfully fetched channel: {channel.name}")
         except Exception as e:
-            print(f"     ✗ Failed to fetch channel: {e}")
             player_data['last_status'] = 'offline'
             player_data['message_id'] = None  # Clear message_id for fresh message on next online
             save_data(data)
             return
         
         if player_data.get('message_id'):
-            print(f"     → Attempting to edit message ID: {player_data['message_id']} to offline")
             try:
                 msg = await channel.fetch_message(player_data['message_id'])
                 await msg.edit(content=None, embed=embed)
-                print(f"     ✓ Successfully edited message to offline")
-            except discord.NotFound:
-                print(f"     → Message not found in channel, sending new offline notification")
+            except:
                 msg = await channel.send(embed=embed)
-                print(f"     ✓ Sent new offline message ID: {msg.id}")
-            except discord.Forbidden:
-                print(f"     → Cannot access message (might be in DMs), sending new offline notification")
-                msg = await channel.send(embed=embed)
-                print(f"     ✓ Sent new offline message ID: {msg.id}")
-            except Exception as e:
-                print(f"     → Error editing message ({type(e).__name__}: {e}), sending new offline notification")
-                msg = await channel.send(embed=embed)
-                print(f"     ✓ Sent new offline message ID: {msg.id}")
         else:
-            print(f"     → No existing message, sending new offline notification")
             msg = await channel.send(embed=embed)
-            print(f"     ✓ Sent offline message ID: {msg.id}")
         
-        # Clear the message_id so next time player goes online, a fresh message is sent
         player_data['message_id'] = None
         player_data['last_status'] = 'offline'
-        print(f"     → Cleared message_id for fresh notification on next online status")
     
     save_data(data)
 
@@ -293,19 +274,17 @@ async def check_players():
                 current_status = 'online' if status_info.get('online', False) else 'offline'
                 
                 if current_status != player_data.get('last_status'):
-                    print(f"✓ {player_data.get('display_name', 'Unknown')} is now {current_status}")
                     await send_or_update_notification(guild_id, user_id, player_data, status_info)
                 
             except Exception as e:
-                print(f"✗ Error checking player {user_id}: {e}")
+                pass
             
             await asyncio.sleep(0.5)
 
 @client.event
 async def on_ready():
     await tree.sync()
-    print(f'Logged in as {client.user}')
-    print(f'Bot is ready! Tracking players...')
+    print(f'Logged in as {client.user}', flush=True)
     
     if not check_players.is_running():
         check_players.start()
