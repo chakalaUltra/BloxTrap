@@ -6,6 +6,7 @@ import os
 import asyncio
 from datetime import datetime
 from roblox_api import RobloxAPI
+from aiohttp import web
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -289,7 +290,22 @@ async def on_ready():
     if not check_players.is_running():
         check_players.start()
 
-def main():
+async def health_check(request):
+    return web.Response(text="Bot is running!")
+
+async def start_web_server():
+    app = web.Application()
+    app.router.add_get('/', health_check)
+    app.router.add_get('/health', health_check)
+    
+    port = int(os.getenv('PORT', 8080))
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, '0.0.0.0', port)
+    await site.start()
+    print(f'Health check server running on port {port}', flush=True)
+
+async def main():
     token = os.getenv('DISCORD_BOT_TOKEN')
     
     if not token:
@@ -297,7 +313,11 @@ def main():
         print("Please add your Discord bot token to Secrets.")
         return
     
-    client.run(token)
+    # Start web server for health checks
+    await start_web_server()
+    
+    # Start Discord bot
+    await client.start(token)
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
