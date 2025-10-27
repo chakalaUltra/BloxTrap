@@ -1,81 +1,161 @@
 import aiohttp
 import asyncio
 from typing import Optional, Dict, List
+from datetime import datetime, timedelta
+import time
 
 class RobloxAPI:
     def __init__(self):
         self.session: Optional[aiohttp.ClientSession] = None
-    
+        self.cache: Dict[str, tuple] = {}
+        self.cache_ttl = {
+            'user_info': 300,
+            'avatar': 300,
+            'presence': 10
+        }
+        self.rate_limit_delay = 0.1
+        self.last_request_time = 0
+        
     async def create_session(self):
         if self.session is None or self.session.closed:
-            self.session = aiohttp.ClientSession()
+            timeout = aiohttp.ClientTimeout(total=10, connect=5)
+            connector = aiohttp.TCPConnector(limit=10, limit_per_host=5)
+            self.session = aiohttp.ClientSession(
+                timeout=timeout,
+                connector=connector
+            )
     
     async def close_session(self):
         if self.session and not self.session.closed:
             await self.session.close()
     
-    async def get_user_info(self, user_id: int) -> Optional[Dict]:
+    def _get_cached(self, cache_key: str, cache_type: str) -> Optional[any]:
+        if cache_key in self.cache:
+            data, timestamp = self.cache[cache_key]
+            ttl = self.cache_ttl.get(cache_type, 60)
+            if time.time() - timestamp < ttl:
+                return data
+            else:
+                del self.cache[cache_key]
+        return None
+    
+    def _set_cache(self, cache_key: str, data: any):
+        self.cache[cache_key] = (data, time.time())
+        
+        if len(self.cache) > 1000:
+            oldest_key = min(self.cache.keys(), key=lambda k: self.cache[k][1])
+            del self.cache[oldest_key]
+    
+    async def _rate_limit(self):
+        current_time = time.time()
+        time_since_last = current_time - self.last_request_time
+        if time_since_last < self.rate_limit_delay:
+            await asyncio.sleep(self.rate_limit_delay - time_since_last)
+        self.last_request_time = time.time()
+    
+    async def _make_request(self, method: str, url: str, **kwargs) -> Optional[Dict]:
         await self.create_session()
-        try:
-            url = f"https://users.roblox.com/v1/users/{user_id}"
-            async with self.session.get(url) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    return {
-                        'id': data.get('id'),
-                        'name': data.get('name'),
-                        'displayName': data.get('displayName'),
-                        'description': data.get('description', ''),
-                        'created': data.get('created', ''),
-                        'hasVerifiedBadge': data.get('hasVerifiedBadge', False)
-                    }
+        await self._rate_limit()
+        
+        max_retries = 3
+        retry_delay = 1
+        
+        for attempt in range(max_retries):
+            try:
+                async with self.session.request(method, url, **kwargs) as response:
+                    if response.status == 200:
+                        return await response.json()
+                    elif response.status == 429:
+                        retry_after = int(response.headers.get('Retry-After', retry_delay * (attempt + 1)))
+                        await asyncio.sleep(retry_after)
+                        continue
+                    elif response.status >= 500:
+                        if attempt < max_retries - 1:
+                            await asyncio.sleep(retry_delay * (attempt + 1))
+                            continue
+                    return None
+            except asyncio.TimeoutError:
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(retry_delay * (attempt + 1))
+                    continue
                 return None
-        except Exception as e:
-            print(f"Error getting user info: {e}")
-            return None
+            except Exception as e:
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(retry_delay * (attempt + 1))
+                    continue
+                print(f"Request error: {e}")
+                return None
+        
+        return None
+    
+    async def get_user_info(self, user_id: int) -> Optional[Dict]:
+        cache_key = f"user_info_{user_id}"
+        cached = self._get_cached(cache_key, 'user_info')
+        if cached is not None:
+            return cached
+        
+        url = f"https://users.roblox.com/v1/users/{user_id}"
+        data = await self._make_request('GET', url)
+        
+        if data:
+            result = {
+                'id': data.get('id'),
+                'name': data.get('name'),
+                'displayName': data.get('displayName'),
+                'description': data.get('description', ''),
+                'created': data.get('created', ''),
+                'hasVerifiedBadge': data.get('hasVerifiedBadge', False)
+            }
+            self._set_cache(cache_key, result)
+            return result
+        return None
     
     async def get_user_avatar_url(self, user_id: int) -> Optional[str]:
-        await self.create_session()
-        try:
-            url = f"https://thumbnails.roblox.com/v1/users/avatar?userIds={user_id}&size=420x420&format=Png&isCircular=false"
-            async with self.session.get(url) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    if data.get('data') and len(data['data']) > 0:
-                        return data['data'][0].get('imageUrl')
-                return None
-        except Exception as e:
-            print(f"Error getting avatar: {e}")
-            return None
+        cache_key = f"avatar_{user_id}"
+        cached = self._get_cached(cache_key, 'avatar')
+        if cached is not None:
+            return cached
+        
+        url = f"https://thumbnails.roblox.com/v1/users/avatar?userIds={user_id}&size=420x420&format=Png&isCircular=false"
+        data = await self._make_request('GET', url)
+        
+        if data and data.get('data') and len(data['data']) > 0:
+            avatar_url = data['data'][0].get('imageUrl')
+            self._set_cache(cache_key, avatar_url)
+            return avatar_url
+        return None
     
     async def get_user_presence(self, user_id: int) -> Optional[Dict]:
-        await self.create_session()
-        try:
-            url = "https://presence.roblox.com/v1/presence/users"
-            payload = {"userIds": [user_id]}
-            async with self.session.post(url, json=payload) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    if data.get('userPresences') and len(data['userPresences']) > 0:
-                        presence = data['userPresences'][0]
-                        return {
-                            'userPresenceType': presence.get('userPresenceType', 0),
-                            'lastLocation': presence.get('lastLocation', ''),
-                            'placeId': presence.get('placeId'),
-                            'rootPlaceId': presence.get('rootPlaceId'),
-                            'gameId': presence.get('gameId'),
-                            'universeId': presence.get('universeId'),
-                            'userId': presence.get('userId'),
-                            'lastOnline': presence.get('lastOnline', '')
-                        }
-                return None
-        except Exception as e:
-            print(f"Error getting presence: {e}")
-            return None
+        cache_key = f"presence_{user_id}"
+        cached = self._get_cached(cache_key, 'presence')
+        if cached is not None:
+            return cached
+        
+        url = "https://presence.roblox.com/v1/presence/users"
+        payload = {"userIds": [user_id]}
+        data = await self._make_request('POST', url, json=payload)
+        
+        if data and data.get('userPresences') and len(data['userPresences']) > 0:
+            presence = data['userPresences'][0]
+            result = {
+                'userPresenceType': presence.get('userPresenceType', 0),
+                'lastLocation': presence.get('lastLocation', ''),
+                'placeId': presence.get('placeId'),
+                'rootPlaceId': presence.get('rootPlaceId'),
+                'gameId': presence.get('gameId'),
+                'universeId': presence.get('universeId'),
+                'userId': presence.get('userId'),
+                'lastOnline': presence.get('lastOnline', '')
+            }
+            self._set_cache(cache_key, result)
+            return result
+        return None
     
     async def get_player_status(self, user_id: int) -> Dict:
-        presence = await self.get_user_presence(user_id)
-        user_info = await self.get_user_info(user_id)
+        presence_task = asyncio.create_task(self.get_user_presence(user_id))
+        user_info_task = asyncio.create_task(self.get_user_info(user_id))
+        
+        presence, user_info = await asyncio.gather(presence_task, user_info_task)
 
         if not presence or not user_info:
             return {
@@ -86,8 +166,6 @@ class RobloxAPI:
 
         presence_type = presence['userPresenceType']
 
-        # userPresenceType: 0 = Offline, 1 = Online (website), 2 = Online (in-game), 3 = In Studio
-        # Only consider type 2 (in-game) as truly "online" to avoid false positives from website browsing
         if presence_type == 2:
             game_location = presence.get('lastLocation', 'Playing')
             return {
@@ -104,3 +182,56 @@ class RobloxAPI:
                 'user_info': user_info,
                 'presence': presence
             }
+    
+    async def get_multiple_user_presences(self, user_ids: List[int]) -> Dict[int, Optional[Dict]]:
+        if not user_ids:
+            return {}
+        
+        url = "https://presence.roblox.com/v1/presence/users"
+        
+        results = {}
+        batch_size = 50
+        
+        for i in range(0, len(user_ids), batch_size):
+            batch = user_ids[i:i + batch_size]
+            
+            uncached_ids = []
+            for user_id in batch:
+                cache_key = f"presence_{user_id}"
+                cached = self._get_cached(cache_key, 'presence')
+                if cached is not None:
+                    results[user_id] = cached
+                else:
+                    uncached_ids.append(user_id)
+            
+            if uncached_ids:
+                payload = {"userIds": uncached_ids}
+                data = await self._make_request('POST', url, json=payload)
+                
+                if data and data.get('userPresences'):
+                    for presence in data['userPresences']:
+                        user_id = presence.get('userId')
+                        if user_id:
+                            result = {
+                                'userPresenceType': presence.get('userPresenceType', 0),
+                                'lastLocation': presence.get('lastLocation', ''),
+                                'placeId': presence.get('placeId'),
+                                'rootPlaceId': presence.get('rootPlaceId'),
+                                'gameId': presence.get('gameId'),
+                                'universeId': presence.get('universeId'),
+                                'userId': presence.get('userId'),
+                                'lastOnline': presence.get('lastOnline', '')
+                            }
+                            cache_key = f"presence_{user_id}"
+                            self._set_cache(cache_key, result)
+                            results[user_id] = result
+        
+        return results
+    
+    def clear_cache(self, cache_type: Optional[str] = None):
+        if cache_type:
+            keys_to_delete = [k for k in self.cache.keys() if k.startswith(cache_type)]
+            for key in keys_to_delete:
+                del self.cache[key]
+        else:
+            self.cache.clear()
