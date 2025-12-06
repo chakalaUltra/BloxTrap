@@ -1,3 +1,4 @@
+
 import aiohttp
 import asyncio
 from typing import Optional, Dict, List
@@ -13,13 +14,13 @@ class RobloxAPI:
             'avatar': 300,
             'presence': 10
         }
-        self.rate_limit_delay = 0.1
+        self.rate_limit_delay = 0.15
         self.last_request_time = 0
         
     async def create_session(self):
         if self.session is None or self.session.closed:
-            timeout = aiohttp.ClientTimeout(total=10, connect=5)
-            connector = aiohttp.TCPConnector(limit=10, limit_per_host=5)
+            timeout = aiohttp.ClientTimeout(total=15, connect=5)
+            connector = aiohttp.TCPConnector(limit=10, limit_per_host=5, force_close=False)
             self.session = aiohttp.ClientSession(
                 timeout=timeout,
                 connector=connector
@@ -28,6 +29,7 @@ class RobloxAPI:
     async def close_session(self):
         if self.session and not self.session.closed:
             await self.session.close()
+            await asyncio.sleep(0.1)
     
     def _get_cached(self, cache_key: str, cache_type: str) -> Optional[any]:
         if cache_key in self.cache:
@@ -67,23 +69,34 @@ class RobloxAPI:
                         return await response.json()
                     elif response.status == 429:
                         retry_after = int(response.headers.get('Retry-After', retry_delay * (attempt + 1)))
+                        print(f"Rate limited, waiting {retry_after}s")
                         await asyncio.sleep(retry_after)
                         continue
                     elif response.status >= 500:
                         if attempt < max_retries - 1:
                             await asyncio.sleep(retry_delay * (attempt + 1))
                             continue
+                    elif response.status == 400:
+                        print(f"Bad request to {url}: {await response.text()}")
+                        return None
                     return None
             except asyncio.TimeoutError:
+                print(f"Timeout on attempt {attempt + 1} for {url}")
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(retry_delay * (attempt + 1))
+                    continue
+                return None
+            except aiohttp.ClientError as e:
+                print(f"Client error on attempt {attempt + 1}: {e}")
                 if attempt < max_retries - 1:
                     await asyncio.sleep(retry_delay * (attempt + 1))
                     continue
                 return None
             except Exception as e:
+                print(f"Request error on attempt {attempt + 1}: {e}")
                 if attempt < max_retries - 1:
                     await asyncio.sleep(retry_delay * (attempt + 1))
                     continue
-                print(f"Request error: {e}")
                 return None
         
         return None
@@ -152,35 +165,51 @@ class RobloxAPI:
         return None
     
     async def get_player_status(self, user_id: int) -> Dict:
-        presence_task = asyncio.create_task(self.get_user_presence(user_id))
-        user_info_task = asyncio.create_task(self.get_user_info(user_id))
-        
-        presence, user_info = await asyncio.gather(presence_task, user_info_task)
+        try:
+            presence_task = asyncio.create_task(self.get_user_presence(user_id))
+            user_info_task = asyncio.create_task(self.get_user_info(user_id))
+            
+            presence, user_info = await asyncio.gather(presence_task, user_info_task, return_exceptions=True)
+            
+            # Handle exceptions from gather
+            if isinstance(presence, Exception):
+                print(f"Error getting presence for {user_id}: {presence}")
+                presence = None
+            if isinstance(user_info, Exception):
+                print(f"Error getting user info for {user_id}: {user_info}")
+                user_info = None
 
-        if not presence or not user_info:
+            if not presence or not user_info:
+                return {
+                    'online': False,
+                    'status': 'Offline',
+                    'user_info': user_info if user_info else {}
+                }
+
+            presence_type = presence.get('userPresenceType', 0)
+
+            if presence_type == 2:
+                game_location = presence.get('lastLocation', 'Playing')
+                return {
+                    'online': True,
+                    'status': 'Online',
+                    'game': game_location,
+                    'user_info': user_info,
+                    'presence': presence
+                }
+            else:
+                return {
+                    'online': False,
+                    'status': 'Offline',
+                    'user_info': user_info,
+                    'presence': presence
+                }
+        except Exception as e:
+            print(f"Unexpected error in get_player_status for {user_id}: {e}")
             return {
                 'online': False,
                 'status': 'Offline',
-                'user_info': user_info
-            }
-
-        presence_type = presence['userPresenceType']
-
-        if presence_type == 2:
-            game_location = presence.get('lastLocation', 'Playing')
-            return {
-                'online': True,
-                'status': 'Online',
-                'game': game_location,
-                'user_info': user_info,
-                'presence': presence
-            }
-        else:
-            return {
-                'online': False,
-                'status': 'Offline',
-                'user_info': user_info,
-                'presence': presence
+                'user_info': {}
             }
     
     async def get_multiple_user_presences(self, user_ids: List[int]) -> Dict[int, Optional[Dict]]:

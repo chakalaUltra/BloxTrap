@@ -1,3 +1,4 @@
+
 import discord
 from discord import app_commands
 from discord.ext import tasks
@@ -112,14 +113,34 @@ async def list_tracked(interaction: discord.Interaction):
         
         async def callback(self, interaction: discord.Interaction):
             selected_id = self.values[0]
-            player_data = data["tracked_players"][guild_id].pop(selected_id)
-            save_data(data)
             
-            embed = discord.Embed(
-                description=f"✅ Removed **{player_data['display_name']}** (@{player_data['username']}) from tracking.",
-                color=0xFFFFFF
-            )
-            await interaction.response.send_message(embed=embed, ephemeral=True)
+            if guild_id in data["tracked_players"] and selected_id in data["tracked_players"][guild_id]:
+                player_data = data["tracked_players"][guild_id][selected_id]
+                
+                # Delete old message if exists
+                if player_data.get('message_id') and guild_id in data["notification_channels"]:
+                    try:
+                        channel = await client.fetch_channel(data["notification_channels"][guild_id])
+                        msg = await channel.fetch_message(player_data['message_id'])
+                        await msg.delete()
+                    except:
+                        pass
+                
+                # Remove from tracking
+                del data["tracked_players"][guild_id][selected_id]
+                save_data(data)
+                
+                embed = discord.Embed(
+                    description=f"✅ Removed **{player_data['display_name']}** (@{player_data['username']}) from tracking.",
+                    color=0xFFFFFF
+                )
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+            else:
+                embed = discord.Embed(
+                    description="❌ Player not found in tracking list.",
+                    color=0xFFFFFF
+                )
+                await interaction.response.send_message(embed=embed, ephemeral=True)
     
     class PlayerView(discord.ui.View):
         def __init__(self):
@@ -167,120 +188,116 @@ async def set_role(interaction: discord.Interaction, role: discord.Role):
     
     await interaction.response.send_message(embed=embed)
 
-async def send_or_update_notification(guild_id: str, user_id: str, player_data: dict, status_info: dict):
+class JoinServerButton(discord.ui.View):
+    def __init__(self, place_id: int, user_id: int):
+        super().__init__(timeout=None)
+        self.place_id = place_id
+        self.user_id = user_id
+        
+        join_url = f"https://www.roblox.com/games/start?placeId={place_id}&launchData=user:{user_id}"
+        button = discord.ui.Button(
+            label="Join Server",
+            style=discord.ButtonStyle.gray,
+            url=join_url
+        )
+        self.add_item(button)
+
+async def send_online_notification(guild_id: str, user_id: str, player_data: dict, status_info: dict):
     user_info = status_info.get('user_info', {})
     username = user_info.get('name', player_data.get('username', 'Unknown'))
     display_name = user_info.get('displayName', player_data.get('display_name', 'Unknown'))
     
     avatar_url = await roblox_api.get_user_avatar_url(int(user_id))
-    
     profile_link = f"https://www.roblox.com/users/{user_id}/profile"
     
-    is_online = status_info.get('online', False)
+    status_text = "Status: Online ✅"
     
-    if is_online:
-        status_text = "Status: Online ✅"
-        
-        description = (
-            f"**[{display_name}]({profile_link})**\n"
-            f"━━━━━━ • Profile • ━━━━━━━\n\n"
-            f"**{status_text}**"
-        )
-        
-        embed = discord.Embed(
-            description=description,
-            color=0xFFFFFF,
-            timestamp=datetime.utcnow()
-        )
-        
-        if avatar_url:
-            embed.set_image(url=avatar_url)
-        
-        if guild_id not in data["notification_channels"]:
-            player_data['last_status'] = 'online'
-            save_data(data)
-            return
-        
-        channel_id = data["notification_channels"][guild_id]
-        
-        try:
-            channel = await client.fetch_channel(channel_id)
-        except Exception as e:
-            player_data['last_status'] = 'online'
-            save_data(data)
-            return
-        
-        role_mention = ""
-        if guild_id in data["ping_roles"]:
-            role_id = data["ping_roles"][guild_id]
-            role_mention = f"<@&{role_id}>"
-        
-        msg = await channel.send(content=role_mention if role_mention else None, embed=embed)
-        player_data['message_id'] = msg.id
-        player_data['last_status'] = 'online'
-    else:
-        status_text = "Status: Offline"
-        
-        description = (
-            f"**[{display_name}]({profile_link})**\n"
-            f"━━━━━━ • Profile • ━━━━━━━\n\n"
-            f"**{status_text}**"
-        )
-        
-        embed = discord.Embed(
-            description=description,
-            color=0xFFFFFF,
-            timestamp=datetime.utcnow()
-        )
-        
-        if avatar_url:
-            embed.set_image(url=avatar_url)
-        
-        if guild_id not in data["notification_channels"]:
-            player_data['last_status'] = 'offline'
-            player_data['message_id'] = None  # Clear message_id for fresh message on next online
-            save_data(data)
-            return
-        
-        channel_id = data["notification_channels"][guild_id]
-        
-        try:
-            channel = await client.fetch_channel(channel_id)
-        except Exception as e:
-            player_data['last_status'] = 'offline'
-            player_data['message_id'] = None  # Clear message_id for fresh message on next online
-            save_data(data)
-            return
-        
-        if player_data.get('message_id'):
-            try:
-                msg = await channel.fetch_message(player_data['message_id'])
-                await msg.edit(content=None, embed=embed)
-            except:
-                msg = await channel.send(embed=embed)
-        else:
-            msg = await channel.send(embed=embed)
-        
-        player_data['message_id'] = None
-        player_data['last_status'] = 'offline'
+    description = (
+        f"**[{display_name}]({profile_link})**\n"
+        f"━━━━━━ • Profile • ━━━━━━━\n\n"
+        f"**{status_text}**"
+    )
     
-    save_data(data)
+    embed = discord.Embed(
+        description=description,
+        color=0xFFFFFF,
+        timestamp=datetime.utcnow()
+    )
+    
+    if avatar_url:
+        embed.set_image(url=avatar_url)
+    
+    if guild_id not in data["notification_channels"]:
+        return
+    
+    channel_id = data["notification_channels"][guild_id]
+    
+    try:
+        channel = await client.fetch_channel(channel_id)
+    except Exception as e:
+        print(f"Failed to fetch channel: {e}")
+        return
+    
+    role_mention = ""
+    if guild_id in data["ping_roles"]:
+        role_id = data["ping_roles"][guild_id]
+        role_mention = f"<@&{role_id}>"
+    
+    # Create view with Join Server button
+    view = None
+    presence = status_info.get('presence', {})
+    place_id = presence.get('placeId')
+    
+    if place_id:
+        view = JoinServerButton(place_id=place_id, user_id=int(user_id))
+    
+    msg = await channel.send(content=role_mention if role_mention else None, embed=embed, view=view)
+    player_data['message_id'] = msg.id
 
 @tasks.loop(seconds=30)
 async def check_players():
-    for guild_id, tracked in data["tracked_players"].items():
-        for user_id, player_data in tracked.items():
-            try:
-                status_info = await roblox_api.get_player_status(int(user_id))
-                current_status = 'online' if status_info.get('online', False) else 'offline'
-                
-                if current_status != player_data.get('last_status'):
-                    await send_or_update_notification(guild_id, user_id, player_data, status_info)
-                
-            except Exception as e:
-                pass
+    try:
+        # Create a copy of guild IDs to avoid modification during iteration
+        guild_ids = list(data["tracked_players"].keys())
+        
+        for guild_id in guild_ids:
+            # Check if guild still exists in data
+            if guild_id not in data["tracked_players"]:
+                continue
             
-            await asyncio.sleep(0.5)
+            # Create a copy of user IDs to avoid modification during iteration
+            user_ids = list(data["tracked_players"][guild_id].keys())
+            
+            for user_id in user_ids:
+                # Check if player still exists in tracking
+                if user_id not in data["tracked_players"][guild_id]:
+                    continue
+                
+                player_data = data["tracked_players"][guild_id][user_id]
+                
+                try:
+                    status_info = await roblox_api.get_player_status(int(user_id))
+                    current_status = 'online' if status_info.get('online', False) else 'offline'
+                    
+                    # Only send notification when player goes from offline to online
+                    if current_status == 'online' and player_data.get('last_status') != 'online':
+                        await send_online_notification(guild_id, user_id, player_data, status_info)
+                    
+                    # Update status
+                    player_data['last_status'] = current_status
+                    save_data(data)
+                    
+                except Exception as e:
+                    print(f"Error checking player {user_id}: {e}")
+                
+                await asyncio.sleep(0.5)
+                
+    except Exception as e:
+        print(f"Error in check_players loop: {e}")
+
+@check_players.before_loop
+async def before_check_players():
+    await client.wait_until_ready()
 
 @client.event
 async def on_ready():
