@@ -253,13 +253,51 @@ async def send_online_notification(guild_id: str, user_id: str, player_data: dic
         {"$set": {"message_id": msg.id}}
     )
 
+async def update_offline_notification(guild_id: str, user_id: str, player_data: dict):
+    if not player_data.get('message_id'):
+        return
+
+    settings = await guild_settings.find_one({"guild_id": guild_id})
+    if not settings or not settings.get('notification_channel_id'):
+        return
+
+    try:
+        channel = await client.fetch_channel(settings['notification_channel_id'])
+        msg = await channel.fetch_message(player_data['message_id'])
+        
+        display_name = player_data.get('display_name', 'Unknown')
+        profile_link = f"https://www.roblox.com/users/{user_id}/profile"
+        avatar_url = await roblox_api.get_user_avatar_url(int(user_id))
+
+        description = (
+            f"**[{display_name}]({profile_link})**\n"
+            f"━━━━━━ • Profile • ━━━━━━━\n\n"
+            f"**Status: Offline ❌**"
+        )
+        
+        embed = discord.Embed(
+            description=description,
+            color=0xFFFFFF,
+            timestamp=datetime.utcnow()
+        )
+        if avatar_url:
+            embed.set_image(url=avatar_url)
+
+        await msg.edit(content=None, embed=embed, view=None)
+        
+        # Clear message_id after marking offline to avoid re-editing
+        await tracked_players.update_one(
+            {"guild_id": guild_id, "roblox_id": user_id},
+            {"$set": {"message_id": None}}
+        )
+    except Exception as e:
+        print(f"Failed to update offline message for {user_id}: {e}")
+
 @tasks.loop(seconds=30)
 async def check_players():
     try:
         cursor = tracked_players.find({})
         all_players = await cursor.to_list(length=1000)
-        
-        print(f"Checking {len(all_players)} players...", flush=True)
         
         for player_data in all_players:
             guild_id = player_data['guild_id']
@@ -268,12 +306,15 @@ async def check_players():
             try:
                 status_info = await roblox_api.get_player_status(int(user_id))
                 current_status = 'online' if status_info.get('online', False) else 'offline'
-                
-                print(f"Player {user_id} status: {current_status} (Last: {player_data.get('last_status')})", flush=True)
-                
-                if current_status == 'online' and player_data.get('last_status') != 'online':
-                    print(f"Sending online notification for {user_id}", flush=True)
+                last_status = player_data.get('last_status')
+
+                # Offline -> Online
+                if current_status == 'online' and last_status != 'online':
                     await send_online_notification(guild_id, user_id, player_data, status_info)
+                
+                # Online -> Offline
+                elif current_status == 'offline' and last_status == 'online':
+                    await update_offline_notification(guild_id, user_id, player_data)
                 
                 await tracked_players.update_one(
                     {"guild_id": guild_id, "roblox_id": user_id},
@@ -281,12 +322,12 @@ async def check_players():
                 )
                 
             except Exception as e:
-                print(f"Error checking player {user_id}: {e}", flush=True)
+                print(f"Error checking player {user_id}: {e}")
             
             await asyncio.sleep(0.5)
                 
     except Exception as e:
-        print(f"Error in check_players loop: {e}", flush=True)
+        print(f"Error in check_players loop: {e}")
 
 @check_players.before_loop
 async def before_check_players():
