@@ -253,7 +253,7 @@ async def send_online_notification(guild_id: str, user_id: str, player_data: dic
         {"$set": {"message_id": msg.id}}
     )
 
-@tasks.loop(seconds=15)
+@tasks.loop(seconds=30)
 async def check_players():
     try:
         cursor = tracked_players.find({})
@@ -264,17 +264,12 @@ async def check_players():
             user_id = player_data['roblox_id']
             
             try:
-                # Force clear cache for presence to get the most up-to-date status
-                roblox_api.clear_cache('presence')
-                
                 status_info = await roblox_api.get_player_status(int(user_id))
                 current_status = 'online' if status_info.get('online', False) else 'offline'
                 
-                # Only send notification when player goes from offline to online
                 if current_status == 'online' and player_data.get('last_status') != 'online':
                     await send_online_notification(guild_id, user_id, player_data, status_info)
                 
-                # Update status in database
                 await tracked_players.update_one(
                     {"guild_id": guild_id, "roblox_id": user_id},
                     {"$set": {"last_status": current_status}}
@@ -283,7 +278,7 @@ async def check_players():
             except Exception as e:
                 print(f"Error checking player {user_id}: {e}")
             
-            await asyncio.sleep(0.1)
+            await asyncio.sleep(0.5)
                 
     except Exception as e:
         print(f"Error in check_players loop: {e}")
