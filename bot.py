@@ -19,7 +19,14 @@ roblox_api = RobloxAPI()
 # MongoDB Setup
 MONGODB_URI = os.getenv('DATABASE')
 mongo_client = AsyncIOMotorClient(MONGODB_URI)
-db = mongo_client.get_default_database()
+
+# Attempt to handle URIs without a default database specified
+try:
+    db = mongo_client.get_default_database()
+except Exception:
+    # Fallback to a named database if not specified in URI
+    db = mongo_client.bloxtrap_bot
+
 guild_settings = db.guild_settings
 tracked_players = db.tracked_players
 

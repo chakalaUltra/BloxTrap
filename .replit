@@ -37,3 +37,8 @@ externalPort = 8080
 
 [nix]
 channel = "stable-25_05"
+
+[userenv]
+
+[userenv.shared]
+DATABASE = "mongodb+srv://ivanxx7777_db_user:xristov7777@cluster0.ro6ivb4.mongodb.net/?appName=Cluster0"
