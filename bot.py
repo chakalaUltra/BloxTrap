@@ -1,14 +1,12 @@
 import discord
 from discord import app_commands
 from discord.ext import tasks
-import json
 import os
 import asyncio
 from datetime import datetime
 from roblox_api import RobloxAPI
 from aiohttp import web
-import psycopg2
-from psycopg2.extras import RealDictCursor
+from motor.motor_asyncio import AsyncIOMotorClient
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -18,38 +16,12 @@ client = discord.Client(intents=intents)
 tree = app_commands.CommandTree(client)
 roblox_api = RobloxAPI()
 
-DATABASE_URL = os.getenv('DATABASE_URL')
-
-def get_db_connection():
-    return psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
-
-def init_db():
-    conn = get_db_connection()
-    cur = conn.cursor()
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS guild_settings (
-            guild_id TEXT PRIMARY KEY,
-            notification_channel_id BIGINT,
-            ping_role_id BIGINT
-        );
-    """)
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS tracked_players (
-            guild_id TEXT,
-            roblox_id TEXT,
-            username TEXT,
-            display_name TEXT,
-            added_at TEXT,
-            last_status TEXT,
-            message_id BIGINT,
-            PRIMARY KEY (guild_id, roblox_id)
-        );
-    """)
-    conn.commit()
-    cur.close()
-    conn.close()
-
-init_db()
+# MongoDB Setup
+MONGODB_URI = os.getenv('DATABASE')
+mongo_client = AsyncIOMotorClient(MONGODB_URI)
+db = mongo_client.get_default_database()
+guild_settings = db.guild_settings
+tracked_players = db.tracked_players
 
 OWNER_USER_ID = 1117540437016727612
 
@@ -78,18 +50,18 @@ async def add_player(interaction: discord.Interaction, roblox_id: str):
     
     guild_id = str(interaction.guild_id)
     
-    conn = get_db_connection()
-    cur = conn.cursor()
-    cur.execute("""
-        INSERT INTO tracked_players (guild_id, roblox_id, username, display_name, added_at, last_status)
-        VALUES (%s, %s, %s, %s, %s, %s)
-        ON CONFLICT (guild_id, roblox_id) DO UPDATE SET
-            username = EXCLUDED.username,
-            display_name = EXCLUDED.display_name
-    """, (guild_id, str(user_id), user_info['name'], user_info['displayName'], datetime.utcnow().isoformat(), "offline"))
-    conn.commit()
-    cur.close()
-    conn.close()
+    await tracked_players.update_one(
+        {"guild_id": guild_id, "roblox_id": str(user_id)},
+        {
+            "$set": {
+                "username": user_info['name'],
+                "display_name": user_info['displayName'],
+                "added_at": datetime.utcnow().isoformat(),
+                "last_status": "offline"
+            }
+        },
+        upsert=True
+    )
     
     embed = discord.Embed(
         description=f"✅ Now tracking **{user_info['displayName']}** (@{user_info['name']})\n Profile ID: `{user_id}`",
@@ -102,14 +74,10 @@ async def add_player(interaction: discord.Interaction, roblox_id: str):
 async def list_tracked(interaction: discord.Interaction):
     guild_id = str(interaction.guild_id)
     
-    conn = get_db_connection()
-    cur = conn.cursor()
-    cur.execute("SELECT * FROM tracked_players WHERE guild_id = %s", (guild_id,))
-    tracked = cur.fetchall()
-    cur.close()
-    conn.close()
+    cursor = tracked_players.find({"guild_id": guild_id})
+    players = await cursor.to_list(length=100)
     
-    if not tracked:
+    if not players:
         embed = discord.Embed(
             description="📋 No players are currently being tracked.\nUse `/add-player <roblox_id>` to start tracking players.",
             color=0xFFFFFF
@@ -133,27 +101,22 @@ async def list_tracked(interaction: discord.Interaction):
         async def callback(self, interaction: discord.Interaction):
             selected_id = self.values[0]
             
-            conn = get_db_connection()
-            cur = conn.cursor()
-            cur.execute("SELECT * FROM tracked_players WHERE guild_id = %s AND roblox_id = %s", (self.guild_id, selected_id))
-            player_data = cur.fetchone()
+            player_data = await tracked_players.find_one({"guild_id": self.guild_id, "roblox_id": selected_id})
             
             if player_data:
                 # Delete old message if exists
                 if player_data.get('message_id'):
-                    cur.execute("SELECT notification_channel_id FROM guild_settings WHERE guild_id = %s", (self.guild_id,))
-                    setting = cur.fetchone()
-                    if setting and setting['notification_channel_id']:
+                    settings = await guild_settings.find_one({"guild_id": self.guild_id})
+                    if settings and settings.get('notification_channel_id'):
                         try:
-                            channel = await client.fetch_channel(setting['notification_channel_id'])
+                            channel = await client.fetch_channel(settings['notification_channel_id'])
                             msg = await channel.fetch_message(player_data['message_id'])
                             await msg.delete()
                         except:
                             pass
                 
                 # Remove from tracking
-                cur.execute("DELETE FROM tracked_players WHERE guild_id = %s AND roblox_id = %s", (self.guild_id, selected_id))
-                conn.commit()
+                await tracked_players.delete_one({"guild_id": self.guild_id, "roblox_id": selected_id})
                 
                 embed = discord.Embed(
                     description=f"✅ Removed **{player_data['display_name']}** (@{player_data['username']}) from tracking.",
@@ -166,8 +129,6 @@ async def list_tracked(interaction: discord.Interaction):
                     color=0xFFFFFF
                 )
                 await interaction.response.send_message(embed=embed, ephemeral=True)
-            cur.close()
-            conn.close()
     
     class PlayerView(discord.ui.View):
         def __init__(self, players, guild_id):
@@ -176,7 +137,7 @@ async def list_tracked(interaction: discord.Interaction):
     
     player_list = "\n".join([
         f"• **{p['display_name']}** (@{p['username']}) - ID: `{p['roblox_id']}`"
-        for p in tracked
+        for p in players
     ])
     
     embed = discord.Embed(
@@ -185,23 +146,18 @@ async def list_tracked(interaction: discord.Interaction):
         color=0xFFFFFF
     )
     
-    await interaction.response.send_message(embed=embed, view=PlayerView(tracked, guild_id), ephemeral=True)
+    await interaction.response.send_message(embed=embed, view=PlayerView(players, guild_id), ephemeral=True)
 
 @tree.command(name="set-channel", description="Sets where notifications are sent")
 @app_commands.describe(channel="The channel to send notifications to")
 async def set_channel(interaction: discord.Interaction, channel: discord.TextChannel):
     guild_id = str(interaction.guild_id)
     
-    conn = get_db_connection()
-    cur = conn.cursor()
-    cur.execute("""
-        INSERT INTO guild_settings (guild_id, notification_channel_id)
-        VALUES (%s, %s)
-        ON CONFLICT (guild_id) DO UPDATE SET notification_channel_id = EXCLUDED.notification_channel_id
-    """, (guild_id, channel.id))
-    conn.commit()
-    cur.close()
-    conn.close()
+    await guild_settings.update_one(
+        {"guild_id": guild_id},
+        {"$set": {"notification_channel_id": channel.id}},
+        upsert=True
+    )
     
     embed = discord.Embed(
         description=f"✅ Notifications will now be sent to {channel.mention}",
@@ -215,16 +171,11 @@ async def set_channel(interaction: discord.Interaction, channel: discord.TextCha
 async def set_role(interaction: discord.Interaction, role: discord.Role):
     guild_id = str(interaction.guild_id)
     
-    conn = get_db_connection()
-    cur = conn.cursor()
-    cur.execute("""
-        INSERT INTO guild_settings (guild_id, ping_role_id)
-        VALUES (%s, %s)
-        ON CONFLICT (guild_id) DO UPDATE SET ping_role_id = EXCLUDED.ping_role_id
-    """, (guild_id, role.id))
-    conn.commit()
-    cur.close()
-    conn.close()
+    await guild_settings.update_one(
+        {"guild_id": guild_id},
+        {"$set": {"ping_role_id": role.id}},
+        upsert=True
+    )
     
     embed = discord.Embed(
         description=f"✅ Will now ping {role.mention} when a tracked player is online",
@@ -269,14 +220,9 @@ async def send_online_notification(guild_id: str, user_id: str, player_data: dic
     if avatar_url:
         embed.set_image(url=avatar_url)
     
-    conn = get_db_connection()
-    cur = conn.cursor()
-    cur.execute("SELECT * FROM guild_settings WHERE guild_id = %s", (guild_id,))
-    settings = cur.fetchone()
-    cur.close()
-    conn.close()
+    settings = await guild_settings.find_one({"guild_id": guild_id})
 
-    if not settings or not settings['notification_channel_id']:
+    if not settings or not settings.get('notification_channel_id'):
         return
     
     try:
@@ -286,7 +232,7 @@ async def send_online_notification(guild_id: str, user_id: str, player_data: dic
         return
     
     role_mention = ""
-    if settings['ping_role_id']:
+    if settings.get('ping_role_id'):
         role_mention = f"<@&{settings['ping_role_id']}>"
     
     presence = status_info.get('presence', {})
@@ -295,23 +241,16 @@ async def send_online_notification(guild_id: str, user_id: str, player_data: dic
     
     msg = await channel.send(content=role_mention if role_mention else None, embed=embed, view=view)
     
-    conn = get_db_connection()
-    cur = conn.cursor()
-    cur.execute("UPDATE tracked_players SET message_id = %s WHERE guild_id = %s AND roblox_id = %s", 
-                (msg.id, guild_id, user_id))
-    conn.commit()
-    cur.close()
-    conn.close()
+    await tracked_players.update_one(
+        {"guild_id": guild_id, "roblox_id": user_id},
+        {"$set": {"message_id": msg.id}}
+    )
 
 @tasks.loop(seconds=30)
 async def check_players():
     try:
-        conn = get_db_connection()
-        cur = conn.cursor()
-        cur.execute("SELECT * FROM tracked_players")
-        all_players = cur.fetchall()
-        cur.close()
-        conn.close()
+        cursor = tracked_players.find({})
+        all_players = await cursor.to_list(length=1000)
         
         for player_data in all_players:
             guild_id = player_data['guild_id']
@@ -324,13 +263,10 @@ async def check_players():
                 if current_status == 'online' and player_data.get('last_status') != 'online':
                     await send_online_notification(guild_id, user_id, player_data, status_info)
                 
-                conn = get_db_connection()
-                cur = conn.cursor()
-                cur.execute("UPDATE tracked_players SET last_status = %s WHERE guild_id = %s AND roblox_id = %s",
-                            (current_status, guild_id, user_id))
-                conn.commit()
-                cur.close()
-                conn.close()
+                await tracked_players.update_one(
+                    {"guild_id": guild_id, "roblox_id": user_id},
+                    {"$set": {"last_status": current_status}}
+                )
                 
             except Exception as e:
                 print(f"Error checking player {user_id}: {e}")
@@ -372,6 +308,10 @@ async def main():
     
     if not token:
         print("ERROR: DISCORD_BOT_TOKEN environment variable not set!")
+        return
+    
+    if not MONGODB_URI:
+        print("ERROR: DATABASE environment variable (MongoDB URI) not set!")
         return
     
     await start_web_server()
