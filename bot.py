@@ -259,6 +259,8 @@ async def check_players():
         cursor = tracked_players.find({})
         all_players = await cursor.to_list(length=1000)
         
+        print(f"Checking {len(all_players)} players...", flush=True)
+        
         for player_data in all_players:
             guild_id = player_data['guild_id']
             user_id = player_data['roblox_id']
@@ -267,7 +269,10 @@ async def check_players():
                 status_info = await roblox_api.get_player_status(int(user_id))
                 current_status = 'online' if status_info.get('online', False) else 'offline'
                 
+                print(f"Player {user_id} status: {current_status} (Last: {player_data.get('last_status')})", flush=True)
+                
                 if current_status == 'online' and player_data.get('last_status') != 'online':
+                    print(f"Sending online notification for {user_id}", flush=True)
                     await send_online_notification(guild_id, user_id, player_data, status_info)
                 
                 await tracked_players.update_one(
@@ -276,12 +281,12 @@ async def check_players():
                 )
                 
             except Exception as e:
-                print(f"Error checking player {user_id}: {e}")
+                print(f"Error checking player {user_id}: {e}", flush=True)
             
             await asyncio.sleep(0.5)
                 
     except Exception as e:
-        print(f"Error in check_players loop: {e}")
+        print(f"Error in check_players loop: {e}", flush=True)
 
 @check_players.before_loop
 async def before_check_players():
