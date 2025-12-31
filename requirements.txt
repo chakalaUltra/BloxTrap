@@ -6,3 +6,5 @@ aiohttp
 discord.py
 aiohttp
 discord.py
+aiohttp
+discord.py
