@@ -7,6 +7,11 @@ from datetime import datetime
 from roblox_api import RobloxAPI
 from aiohttp import web
 from motor.motor_asyncio import AsyncIOMotorClient
+import logging
+
+# Setup logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -18,13 +23,14 @@ roblox_api = RobloxAPI()
 
 # MongoDB Setup
 MONGODB_URI = os.getenv('DATABASE')
+if not MONGODB_URI:
+    logger.error("DATABASE environment variable not set!")
+
 mongo_client = AsyncIOMotorClient(MONGODB_URI)
 
-# Attempt to handle URIs without a default database specified
 try:
     db = mongo_client.get_default_database()
 except Exception:
-    # Fallback to a named database if not specified in URI
     db = mongo_client.bloxtrap_bot
 
 guild_settings = db.guild_settings
@@ -32,302 +38,209 @@ tracked_players = db.tracked_players
 
 OWNER_USER_ID = 1117540437016727612
 
-@tree.command(name="add-player", description="Add a Roblox player to track by their user ID")
-@app_commands.describe(roblox_id="The Roblox user ID (Profile ID) to track")
+def create_embed(title: str, description: str, color: int = 0x2b2d31, footer: str = None) -> discord.Embed:
+    """Improved embed creator with better Discord dark theme color."""
+    embed = discord.Embed(
+        title=title,
+        description=description,
+        color=color,
+        timestamp=datetime.utcnow()
+    )
+    if footer:
+        embed.set_footer(text=footer)
+    return embed
+
+@tree.command(name="add-player", description="Add a Roblox player to track")
+@app_commands.describe(roblox_id="Roblox user ID to track")
 async def add_player(interaction: discord.Interaction, roblox_id: str):
+    await interaction.response.defer(ephemeral=True)
     try:
-        user_id = int(roblox_id)
+        user_id = int(roblox_id.strip())
     except ValueError:
-        embed = discord.Embed(
-            description="❌ Invalid Roblox ID. Please provide a valid Profile ID (numbers only).",
-            color=0xFFFFFF
-        )
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        embed = create_embed("❌ Error", "Invalid Roblox ID. Use numbers only.", 0xff0000)
+        await interaction.followup.send(embed=embed, ephemeral=True)
         return
-    
+
     user_info = await roblox_api.get_user_info(user_id)
-    
     if not user_info:
-        embed = discord.Embed(
-            description=f"❌ Could not find Roblox user with ID: {user_id}",
-            color=0xFFFFFF
-        )
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        embed = create_embed("❌ Not Found", f"Roblox user {user_id} not found.", 0xff0000)
+        await interaction.followup.send(embed=embed, ephemeral=True)
         return
-    
+
     guild_id = str(interaction.guild_id)
-    
     await tracked_players.update_one(
         {"guild_id": guild_id, "roblox_id": str(user_id)},
-        {
-            "$set": {
-                "username": user_info['name'],
-                "display_name": user_info['displayName'],
-                "added_at": datetime.utcnow().isoformat(),
-                "last_status": "offline"
-            }
-        },
+        {"$set": {
+            "username": user_info.get('name'),
+            "display_name": user_info.get('displayName'),
+            "added_at": datetime.utcnow().isoformat(),
+            "last_status": "offline"
+        }},
         upsert=True
     )
-    
-    embed = discord.Embed(
-        description=f"✅ Now tracking **{user_info['displayName']}** (@{user_info['name']})\n Profile ID: `{user_id}`",
-        color=0xFFFFFF
-    )
-    
-    await interaction.response.send_message(embed=embed)
 
-@tree.command(name="list-tracked", description="Shows all tracked players with a dropdown menu")
+    embed = create_embed(
+        "✅ Tracking Added",
+        f"**{user_info.get('displayName', 'Unknown')}** (@{user_info.get('name', 'N/A')})\nID: `{user_id}`",
+        0x00ff00
+    )
+    await interaction.followup.send(embed=embed)
+
+@tree.command(name="list-tracked", description="List and manage tracked players")
 async def list_tracked(interaction: discord.Interaction):
     guild_id = str(interaction.guild_id)
-    
     cursor = tracked_players.find({"guild_id": guild_id})
-    players = await cursor.to_list(length=100)
-    
+    players = await cursor.to_list(length=50)
+
     if not players:
-        embed = discord.Embed(
-            description="📋 No players are currently being tracked.\nUse `/add-player <roblox_id>` to start tracking players.",
-            color=0xFFFFFF
-        )
+        embed = create_embed("📋 No Players", "Use `/add-player` to start tracking.", 0x2b2d31)
         await interaction.response.send_message(embed=embed, ephemeral=True)
         return
-    
+
     class PlayerSelect(discord.ui.Select):
-        def __init__(self, players, guild_id):
-            self.guild_id = guild_id
+        def __init__(self, players_list, g_id):
+            self.guild_id = g_id
             options = [
                 discord.SelectOption(
-                    label=f"{p['display_name']} (@{p['username']})",
-                    description=f"ID: {p['roblox_id']} - Click to remove",
+                    label=f"{p.get('display_name', p.get('username', 'Unknown'))}",
+                    description=f"ID: {p['roblox_id']}",
                     value=p['roblox_id']
-                )
-                for p in players
+                ) for p in players_list
             ]
-            super().__init__(placeholder="Select a player to remove from tracking", options=options, min_values=1, max_values=1)
-        
-        async def callback(self, interaction: discord.Interaction):
-            selected_id = self.values[0]
-            
-            player_data = await tracked_players.find_one({"guild_id": self.guild_id, "roblox_id": selected_id})
-            
-            if player_data:
-                # Delete old message if exists
-                if player_data.get('message_id'):
-                    settings = await guild_settings.find_one({"guild_id": self.guild_id})
-                    if settings and settings.get('notification_channel_id'):
-                        try:
-                            channel = await client.fetch_channel(settings['notification_channel_id'])
-                            msg = await channel.fetch_message(player_data['message_id'])
-                            await msg.delete()
-                        except:
-                            pass
-                
-                # Remove from tracking
-                await tracked_players.delete_one({"guild_id": self.guild_id, "roblox_id": selected_id})
-                
-                embed = discord.Embed(
-                    description=f"✅ Removed **{player_data['display_name']}** (@{player_data['username']}) from tracking.",
-                    color=0xFFFFFF
-                )
-                await interaction.response.send_message(embed=embed, ephemeral=True)
-            else:
-                embed = discord.Embed(
-                    description="❌ Player not found in tracking list.",
-                    color=0xFFFFFF
-                )
-                await interaction.response.send_message(embed=embed, ephemeral=True)
-    
-    class PlayerView(discord.ui.View):
-        def __init__(self, players, guild_id):
-            super().__init__()
-            self.add_item(PlayerSelect(players, guild_id))
-    
-    player_list = "\n".join([
-        f"• **{p['display_name']}** (@{p['username']}) - ID: `{p['roblox_id']}`"
-        for p in players
-    ])
-    
-    embed = discord.Embed(
-        title="📋 Tracked Players",
-        description=f"{player_list}\n\n**Select a player below to remove them from tracking:**",
-        color=0xFFFFFF
-    )
-    
-    await interaction.response.send_message(embed=embed, view=PlayerView(players, guild_id), ephemeral=True)
+            super().__init__(placeholder="Select player to remove", options=options, min_values=1, max_values=1)
 
-@tree.command(name="set-channel", description="Sets where notifications are sent")
-@app_commands.describe(channel="The channel to send notifications to")
+        async def callback(self, inter: discord.Interaction):
+            selected = self.values[0]
+            await tracked_players.delete_one({"guild_id": self.guild_id, "roblox_id": selected})
+            embed = create_embed("✅ Removed", f"Player {selected} removed from tracking.", 0x00ff00)
+            await inter.response.send_message(embed=embed, ephemeral=True)
+
+    view = discord.ui.View()
+    view.add_item(PlayerSelect(players, guild_id))
+
+    player_list = "\n".join([f"• **{p.get('display_name')}** (@{p.get('username')}) - `{p['roblox_id']}`" for p in players])
+    embed = create_embed("📋 Tracked Players", player_list + "\n\nSelect below to remove:")
+    await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+
+@tree.command(name="set-channel", description="Set notification channel")
+@app_commands.describe(channel="Notification channel")
 async def set_channel(interaction: discord.Interaction, channel: discord.TextChannel):
     guild_id = str(interaction.guild_id)
-    
     await guild_settings.update_one(
         {"guild_id": guild_id},
         {"$set": {"notification_channel_id": channel.id}},
         upsert=True
     )
-    
-    embed = discord.Embed(
-        description=f"✅ Notifications will now be sent to {channel.mention}",
-        color=0xFFFFFF
-    )
-    
+    embed = create_embed("✅ Channel Set", f"Notifications → {channel.mention}")
     await interaction.response.send_message(embed=embed)
 
-@tree.command(name="set-role", description="Sets which role gets pinged when a player is online")
-@app_commands.describe(role="The role to ping for notifications")
+@tree.command(name="set-role", description="Set ping role for online notifications")
+@app_commands.describe(role="Role to ping")
 async def set_role(interaction: discord.Interaction, role: discord.Role):
     guild_id = str(interaction.guild_id)
-    
     await guild_settings.update_one(
         {"guild_id": guild_id},
         {"$set": {"ping_role_id": role.id}},
         upsert=True
     )
-    
-    embed = discord.Embed(
-        description=f"✅ Will now ping {role.mention} when a tracked player is online",
-        color=0xFFFFFF
-    )
-    
+    embed = create_embed("✅ Role Set", f"Will ping {role.mention} on online events.")
     await interaction.response.send_message(embed=embed)
 
 class JoinServerButton(discord.ui.View):
     def __init__(self, place_id: int, user_id: int):
         super().__init__(timeout=None)
-        self.place_id = place_id
-        self.user_id = user_id
-        
         join_url = f"https://www.roblox.com/games/start?placeId={place_id}&launchData=user:{user_id}"
-        button = discord.ui.Button(
-            label="Join Server",
-            style=discord.ButtonStyle.gray,
-            url=join_url
-        )
-        self.add_item(button)
+        self.add_item(discord.ui.Button(label="Join Server", style=discord.ButtonStyle.blurple, url=join_url))
 
 async def send_online_notification(guild_id: str, user_id: str, player_data: dict, status_info: dict):
     user_info = status_info.get('user_info', {})
     display_name = user_info.get('displayName', player_data.get('display_name', 'Unknown'))
-    
     avatar_url = await roblox_api.get_user_avatar_url(int(user_id))
     profile_link = f"https://www.roblox.com/users/{user_id}/profile"
-    
-    description = (
-        f"**[{display_name}]({profile_link})**\n"
-        f"━━━━━━ • Profile • ━━━━━━━\n\n"
-        f"**Status: Online ✅**"
-    )
-    
-    embed = discord.Embed(
-        description=description,
-        color=0xFFFFFF,
-        timestamp=datetime.utcnow()
-    )
-    
-    if avatar_url:
-        embed.set_image(url=avatar_url)
-    
-    settings = await guild_settings.find_one({"guild_id": guild_id})
 
+    description = f"**[{display_name}]({profile_link})** is now **Online** ✅\n\n"
+    if status_info.get('game'):
+        description += f"**Playing:** {status_info.get('game', 'Unknown')}\n"
+
+    embed = create_embed("🟢 Player Online", description, color=0x00ff00)
+    if avatar_url:
+        embed.set_thumbnail(url=avatar_url)
+
+    settings = await guild_settings.find_one({"guild_id": guild_id})
     if not settings or not settings.get('notification_channel_id'):
         return
-    
+
     try:
         channel = await client.fetch_channel(settings['notification_channel_id'])
+        role_mention = f"<@&{settings['ping_role_id']}>" if settings.get('ping_role_id') else ""
+        place_id = status_info.get('presence', {}).get('placeId')
+        view = JoinServerButton(place_id, int(user_id)) if place_id else None
+
+        msg = await channel.send(content=role_mention, embed=embed, view=view)
+        await tracked_players.update_one(
+            {"guild_id": guild_id, "roblox_id": user_id},
+            {"$set": {"message_id": msg.id, "last_status": "online"}}
+        )
     except Exception as e:
-        print(f"Failed to fetch channel: {e}")
-        return
-    
-    role_mention = ""
-    if settings.get('ping_role_id'):
-        role_mention = f"<@&{settings['ping_role_id']}>"
-    
-    presence = status_info.get('presence', {})
-    place_id = presence.get('placeId')
-    view = JoinServerButton(place_id=place_id, user_id=int(user_id)) if place_id else None
-    
-    msg = await channel.send(content=role_mention if role_mention else None, embed=embed, view=view)
-    
-    await tracked_players.update_one(
-        {"guild_id": guild_id, "roblox_id": user_id},
-        {"$set": {"message_id": msg.id}}
-    )
+        logger.error(f"Notification failed: {e}")
 
 async def update_offline_notification(guild_id: str, user_id: str, player_data: dict):
     if not player_data.get('message_id'):
         return
-
     settings = await guild_settings.find_one({"guild_id": guild_id})
     if not settings or not settings.get('notification_channel_id'):
         return
-
     try:
         channel = await client.fetch_channel(settings['notification_channel_id'])
         msg = await channel.fetch_message(player_data['message_id'])
-        
         display_name = player_data.get('display_name', 'Unknown')
-        profile_link = f"https://www.roblox.com/users/{user_id}/profile"
         avatar_url = await roblox_api.get_user_avatar_url(int(user_id))
+        profile_link = f"https://www.roblox.com/users/{user_id}/profile"
 
-        description = (
-            f"**[{display_name}]({profile_link})**\n"
-            f"━━━━━━ • Profile • ━━━━━━━\n\n"
-            f"**Status: Offline ❌**"
-        )
-        
-        embed = discord.Embed(
-            description=description,
-            color=0xFFFFFF,
-            timestamp=datetime.utcnow()
-        )
+        embed = create_embed("🔴 Player Offline", f"**[{display_name}]({profile_link})** is now **Offline** ❌", color=0xff0000)
         if avatar_url:
-            embed.set_image(url=avatar_url)
+            embed.set_thumbnail(url=avatar_url)
 
         await msg.edit(content=None, embed=embed, view=None)
-        
-        # Clear message_id after marking offline to avoid re-editing
         await tracked_players.update_one(
             {"guild_id": guild_id, "roblox_id": user_id},
-            {"$set": {"message_id": None}}
+            {"$set": {"message_id": None, "last_status": "offline"}}
         )
     except Exception as e:
-        print(f"Failed to update offline message for {user_id}: {e}")
+        logger.warning(f"Offline update failed: {e}")
 
-@tasks.loop(seconds=30)
+@tasks.loop(seconds=45)  # Slightly longer interval for stability
 async def check_players():
     try:
         cursor = tracked_players.find({})
-        all_players = await cursor.to_list(length=1000)
-        
-        for player_data in all_players:
-            guild_id = player_data['guild_id']
-            user_id = player_data['roblox_id']
-            
-            try:
-                status_info = await roblox_api.get_player_status(int(user_id))
-                current_status = 'online' if status_info.get('online', False) else 'offline'
-                last_status = player_data.get('last_status')
+        all_players = await cursor.to_list(length=500)
 
-                # Offline -> Online
-                if current_status == 'online' and last_status != 'online':
-                    await send_online_notification(guild_id, user_id, player_data, status_info)
-                
-                # Online -> Offline
-                elif current_status == 'offline' and last_status == 'online':
-                    await update_offline_notification(guild_id, user_id, player_data)
-                
-                await tracked_players.update_one(
-                    {"guild_id": guild_id, "roblox_id": user_id},
-                    {"$set": {"last_status": current_status}}
-                )
-                
-            except Exception as e:
-                print(f"Error checking player {user_id}: {e}")
-            
-            await asyncio.sleep(0.5)
-                
+        if not all_players:
+            return
+
+        user_ids = [int(p['roblox_id']) for p in all_players]
+        presences = await roblox_api.get_multiple_user_presences(user_ids)
+
+        for player_data in all_players:
+            user_id = player_data['roblox_id']
+            guild_id = player_data['guild_id']
+            presence = presences.get(int(user_id))
+            current_online = bool(presence and presence.get('userPresenceType') == 2)
+
+            last_status = player_data.get('last_status', 'offline')
+
+            if current_online and last_status != 'online':
+                status_info = await roblox_api.get_player_status(int(user_id))
+                await send_online_notification(guild_id, user_id, player_data, status_info)
+            elif not current_online and last_status == 'online':
+                await update_offline_notification(guild_id, user_id, player_data)
+
+            await tracked_players.update_one(
+                {"guild_id": guild_id, "roblox_id": user_id},
+                {"$set": {"last_status": "online" if current_online else "offline"}}
+            )
     except Exception as e:
-        print(f"Error in check_players loop: {e}")
+        logger.error(f"Check players error: {e}")
 
 @check_players.before_loop
 async def before_check_players():
@@ -336,39 +249,36 @@ async def before_check_players():
 @client.event
 async def on_ready():
     await tree.sync()
-    print(f'Logged in as {client.user}', flush=True)
-    
+    logger.info(f'✅ BloxTrap logged in as {client.user}')
     if not check_players.is_running():
         check_players.start()
 
+    # Set rich presence
+    await client.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name="Roblox Players"))
+
 async def health_check(request):
-    return web.Response(text="Bot is running!")
+    return web.Response(text="BloxTrap is running! ✅")
 
 async def start_web_server():
     app = web.Application()
     app.router.add_get('/', health_check)
     app.router.add_get('/health', health_check)
-    
     port = int(os.getenv('PORT', 8080))
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, '0.0.0.0', port)
     await site.start()
-    print(f'Health check server running on port {port}', flush=True)
+    logger.info(f"Web server running on port {port}")
 
 async def main():
-    token = os.getenv('DISCORD_BOT_TOKEN')
-    
-    if not token:
-        print("ERROR: DISCORD_BOT_TOKEN environment variable not set!")
-        return
-    
-    if not MONGODB_URI:
-        print("ERROR: DATABASE environment variable (MongoDB URI) not set!")
-        return
-    
-    await start_web_server()
-    await client.start(token)
+    await roblox_api.create_session()
+    try:
+        await asyncio.gather(
+            client.start(os.getenv('TOKEN')),
+            start_web_server()
+        )
+    finally:
+        await roblox_api.close_session()
 
 if __name__ == "__main__":
     asyncio.run(main())
